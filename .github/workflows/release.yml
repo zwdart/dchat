@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.47.5"
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dchat-android
+          path: build/app/outputs/flutter-apk/app-release.apk
+
+  ios:
+    name: iOS app (unsigned)
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign
+      - run: |
+          cd build/ios/iphoneos
+          /usr/bin/ditto -c -k --keepParent Runner.app dchat-ios-unsigned.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dchat-ios
+          path: build/ios/iphoneos/dchat-ios-unsigned.zip
+
+  macos:
+    name: macOS app
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build macos --release
+      - run: |
+          cd build/macos/Build/Products/Release
+          /usr/bin/ditto -c -k --keepParent dchat.app dchat-macos.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dchat-macos
+          path: build/macos/Build/Products/Release/dchat-macos.zip
+
+  linux:
+    name: Linux bundle
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
+            libstdc++-12-dev libayatana-appindicator3-dev
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build linux --release
+      - run: |
+          cd build/linux/x64/release
+          tar -czf dchat-linux-x64.tar.gz bundle
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dchat-linux
+          path: build/linux/x64/release/dchat-linux-x64.tar.gz
+
+  windows:
+    name: Windows bundle
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter build windows --release
+      - shell: pwsh
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* `
+            -DestinationPath build/windows/x64/runner/dchat-windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dchat-windows
+          path: build/windows/x64/runner/dchat-windows-x64.zip
+
+  publish:
+    name: Publish release
+    needs: [android, ios, macos, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Collect packages
+        run: |
+          mkdir -p packages
+          cp artifacts/dchat-android/app-release.apk packages/dchat-android.apk
+          cp artifacts/dchat-ios/dchat-ios-unsigned.zip packages/
+          cp artifacts/dchat-macos/dchat-macos.zip packages/
+          cp artifacts/dchat-linux/dchat-linux-x64.tar.gz packages/
+          cp artifacts/dchat-windows/dchat-windows-x64.zip packages/
+          ls -lh packages
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
