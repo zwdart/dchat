@@ -14,7 +14,7 @@ env:
 
 jobs:
   android:
-    name: Android APK
+    name: Android packages
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,15 +28,54 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter build apk --release
-      - uses: actions/upload-artifact@v4
+
+      - name: Build split APKs (per ABI)
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build universal APK
+        run: flutter build apk --release
+
+      - name: Build App Bundle
+        run: flutter build appbundle --release
+
+      - name: Upload armeabi-v7a APK
+        uses: actions/upload-artifact@v4
         with:
-          name: dchat-android
+          name: dchat-android-armeabi-v7a
+          path: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          if-no-files-found: error
+
+      - name: Upload arm64-v8a APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dchat-android-arm64-v8a
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: error
+
+      - name: Upload x86_64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dchat-android-x86_64
+          path: build/app/outputs/flutter-apk/app-x86_64-release.apk
+          if-no-files-found: error
+
+      - name: Upload universal APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dchat-android-universal
           path: build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload App Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dchat-android-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: error
 
   ios:
-    name: iOS app (unsigned)
-    runs-on: macos-latest
+    name: iOS app (unsigned, arm64)
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -46,17 +85,67 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
-      - run: |
+
+      - name: Package IPA
+        run: |
           cd build/ios/iphoneos
-          /usr/bin/ditto -c -k --keepParent Runner.app dchat-ios-unsigned.zip
+          rm -rf Payload
+          mkdir Payload
+          cp -R Runner.app Payload/
+          zip -qry dchat-ios-arm64-unsigned.ipa Payload
+          /usr/bin/ditto -c -k --keepParent Runner.app dchat-ios-arm64-unsigned.app.zip
+
       - uses: actions/upload-artifact@v4
         with:
           name: dchat-ios
-          path: build/ios/iphoneos/dchat-ios-unsigned.zip
+          path: |
+            build/ios/iphoneos/dchat-ios-arm64-unsigned.ipa
+            build/ios/iphoneos/dchat-ios-arm64-unsigned.app.zip
+          if-no-files-found: error
 
   macos:
-    name: macOS app
-    runs-on: macos-latest
+    name: macOS ${{ matrix.arch }}
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            xcode_arch: arm64
+            artifact: dchat-macos-arm64
+            package: dchat-macos-arm64.zip
+          - arch: x64
+            xcode_arch: x86_64
+            artifact: dchat-macos-x64
+            package: dchat-macos-x64.zip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+      - run: flutter pub get
+
+      - name: Build macOS (${{ matrix.arch }})
+        env:
+          FLUTTER_XCODE_ARCHS: ${{ matrix.xcode_arch }}
+        run: flutter build macos --release
+
+      - name: Package app
+        run: |
+          cd build/macos/Build/Products/Release
+          /usr/bin/ditto -c -k --keepParent dchat.app ${{ matrix.package }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: build/macos/Build/Products/Release/${{ matrix.package }}
+          if-no-files-found: error
+
+  macos-universal:
+    name: macOS universal
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -66,42 +155,82 @@ jobs:
           cache: true
       - run: flutter pub get
       - run: flutter build macos --release
-      - run: |
+
+      - name: Package app
+        run: |
           cd build/macos/Build/Products/Release
-          /usr/bin/ditto -c -k --keepParent dchat.app dchat-macos.zip
+          /usr/bin/ditto -c -k --keepParent dchat.app dchat-macos-universal.zip
+
       - uses: actions/upload-artifact@v4
         with:
-          name: dchat-macos
-          path: build/macos/Build/Products/Release/dchat-macos.zip
+          name: dchat-macos-universal
+          path: build/macos/Build/Products/Release/dchat-macos-universal.zip
+          if-no-files-found: error
 
   linux:
-    name: Linux bundle
-    runs-on: ubuntu-22.04
+    name: Linux ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+            target: linux-x64
+            artifact: dchat-linux-x64
+            package: dchat-linux-x64.tar.gz
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: linux-arm64
+            artifact: dchat-linux-arm64
+            package: dchat-linux-arm64.tar.gz
     steps:
       - uses: actions/checkout@v4
-      - run: |
+
+      - name: Install Linux build dependencies
+        run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-            libstdc++-12-dev libayatana-appindicator3-dev
+            clang cmake ninja-build pkg-config g++ \
+            libgtk-3-dev liblzma-dev libx11-dev libxi-dev \
+            libayatana-appindicator3-dev
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter build linux --release
-      - run: |
-          cd build/linux/x64/release
-          tar -czf dchat-linux-x64.tar.gz bundle
+
+      - name: Build Linux (${{ matrix.arch }})
+        run: flutter build linux --release --target-platform ${{ matrix.target }}
+
+      - name: Package bundle
+        run: |
+          cd build/linux/${{ matrix.arch }}/release
+          tar -czf ${{ matrix.package }} bundle
+
       - uses: actions/upload-artifact@v4
         with:
-          name: dchat-linux
-          path: build/linux/x64/release/dchat-linux-x64.tar.gz
+          name: ${{ matrix.artifact }}
+          path: build/linux/${{ matrix.arch }}/release/${{ matrix.package }}
+          if-no-files-found: error
 
   windows:
-    name: Windows bundle
-    runs-on: windows-latest
+    name: Windows ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+            artifact: dchat-windows-x64
+            package: dchat-windows-x64.zip
+          - arch: arm64
+            runner: windows-11-arm
+            artifact: dchat-windows-arm64
+            package: dchat-windows-arm64.zip
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -110,33 +239,76 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter build windows --release
-      - shell: pwsh
+
+      - name: Build Windows (${{ matrix.arch }})
+        run: flutter build windows --release
+
+      - name: Package bundle
+        shell: pwsh
         run: |
-          Compress-Archive -Path build/windows/x64/runner/Release/* `
-            -DestinationPath build/windows/x64/runner/dchat-windows-x64.zip
+          Compress-Archive -Path build/windows/${{ matrix.arch }}/runner/Release/* `
+            -DestinationPath build/windows/${{ matrix.arch }}/runner/${{ matrix.package }}
+
       - uses: actions/upload-artifact@v4
         with:
-          name: dchat-windows
-          path: build/windows/x64/runner/dchat-windows-x64.zip
+          name: ${{ matrix.artifact }}
+          path: build/windows/${{ matrix.arch }}/runner/${{ matrix.package }}
+          if-no-files-found: error
 
   publish:
     name: Publish release
-    needs: [android, ios, macos, linux, windows]
+    needs:
+      - android
+      - ios
+      - macos
+      - macos-universal
+      - linux
+      - windows
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+
       - name: Collect packages
         run: |
           mkdir -p packages
-          cp artifacts/dchat-android/app-release.apk packages/dchat-android.apk
-          cp artifacts/dchat-ios/dchat-ios-unsigned.zip packages/
-          cp artifacts/dchat-macos/dchat-macos.zip packages/
-          cp artifacts/dchat-linux/dchat-linux-x64.tar.gz packages/
-          cp artifacts/dchat-windows/dchat-windows-x64.zip packages/
+
+          cp artifacts/dchat-android-armeabi-v7a/app-armeabi-v7a-release.apk \
+            packages/dchat-android-armeabi-v7a.apk
+          cp artifacts/dchat-android-arm64-v8a/app-arm64-v8a-release.apk \
+            packages/dchat-android-arm64-v8a.apk
+          cp artifacts/dchat-android-x86_64/app-x86_64-release.apk \
+            packages/dchat-android-x86_64.apk
+          cp artifacts/dchat-android-universal/app-release.apk \
+            packages/dchat-android-universal.apk
+          cp artifacts/dchat-android-aab/app-release.aab \
+            packages/dchat-android.aab
+
+          cp artifacts/dchat-ios/dchat-ios-arm64-unsigned.ipa \
+            packages/dchat-ios-arm64-unsigned.ipa
+          cp artifacts/dchat-ios/dchat-ios-arm64-unsigned.app.zip \
+            packages/dchat-ios-arm64-unsigned.app.zip
+
+          cp artifacts/dchat-macos-arm64/dchat-macos-arm64.zip \
+            packages/dchat-macos-arm64.zip
+          cp artifacts/dchat-macos-x64/dchat-macos-x64.zip \
+            packages/dchat-macos-x64.zip
+          cp artifacts/dchat-macos-universal/dchat-macos-universal.zip \
+            packages/dchat-macos-universal.zip
+
+          cp artifacts/dchat-linux-x64/dchat-linux-x64.tar.gz \
+            packages/dchat-linux-x64.tar.gz
+          cp artifacts/dchat-linux-arm64/dchat-linux-arm64.tar.gz \
+            packages/dchat-linux-arm64.tar.gz
+
+          cp artifacts/dchat-windows-x64/dchat-windows-x64.zip \
+            packages/dchat-windows-x64.zip
+          cp artifacts/dchat-windows-arm64/dchat-windows-arm64.zip \
+            packages/dchat-windows-arm64.zip
+
           ls -lh packages
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
