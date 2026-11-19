@@ -134,6 +134,15 @@ flutter build ios --release --no-codesign
 - `.github/workflows/ci.yml`：`analyze`、`test`，并构建 Android APK、iOS（未签名）、macOS、Linux、Windows 产物。
 - `.github/workflows/release.yml`：推送 `v*` 标签时构建全部平台并上传到 GitHub Release。
 
+```
+git add pubspec.yaml
+git commit -m "chore: release v1.0.0"
+git push github master
+
+git tag -a v1.0.0 -m "dchat v1.0.0"
+git push github v1.0.0
+```
+
 产物命名：
 
 | 平台 | 文件 |
